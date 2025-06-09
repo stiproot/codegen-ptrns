@@ -1,0 +1,24 @@
+{
+  "name": "src",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.3.57",
+    "@langchain/langgraph": "^0.3.1",
+    "@langchain/openai": "^0.5.12",
+    "dotenv": "^16.5.0",
+    "effect": "^3.16.5",
+    "vm2": "^3.9.19",
+    "zod": "^3.25.56"
+  }
+}
