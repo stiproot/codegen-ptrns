@@ -1,7 +1,7 @@
 # Microservices Architecture Principles
 Core principles behind effective, scalable, performant, and maintainable microservice architectures, distilled.
 
-## Single Responsibility Principle (SRP): 
+## Single Responsibility Principle (SRP):
 Each microservice should do one thing and do it well, encapsulating a single business capability.
 This limits blast radius and promotes independent development/deployment.
 
