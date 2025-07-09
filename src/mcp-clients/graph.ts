@@ -8,12 +8,13 @@ import {
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
 import { MultiServerMCPClient } from "@langchain/mcp-adapters";
-import { Effect, Console, Exit, Scope, Config } from "effect";
+import { Effect, Console, Exit, Scope, Config, Layer, Context } from "effect";
 import { NodeRuntime } from "@effect/platform-node";
 import * as Schema from "effect/Schema";
 import * as dotenv from "dotenv";
 
 dotenv.config();
+
 
 const azureOpenAIApiKey = Config.string("AZURE_OPENAI_API_KEY");
 const azureOpenAIApiDeploymentName = Config.string("AZURE_OPENAI_API_DEPLOYMENT_NAME");
@@ -34,57 +35,66 @@ class NoToolsError extends Schema.TaggedError<NoToolsError>()("NoToolsError", {
   message: Schema.String,
 }) { }
 
-// Create MCP Client with proper typing
-const createMCPClient = (): Effect.Effect<MultiServerMCPClient, MCPClientError> =>
-  Effect.try({
-    try: () => {
-      const client = new MultiServerMCPClient({
-        throwOnLoadError: true,
-        prefixToolNameWithServerName: true,
-        additionalToolNamePrefix: "mcp",
-        useStandardContentBlocks: true,
-        mcpServers: {
-          weather: {
-            transport: "stdio",
-            command: process.execPath,
-            args: ["../mcp-servers/weather-server-typescript/build/index.js"],
+// Service tag for MultiServerMCPClient
+class MCPClientService extends Context.Tag("MCPClientService")<
+  MCPClientService,
+  MultiServerMCPClient
+>() {}
+
+// Create MCP Client Layer with proper resource management
+const MCPClientLive = Layer.scoped(
+  MCPClientService,
+  Effect.acquireRelease(
+    Effect.try({
+      try: () => {
+        const client = new MultiServerMCPClient({
+          throwOnLoadError: true,
+          prefixToolNameWithServerName: true,
+          additionalToolNamePrefix: "mcp",
+          useStandardContentBlocks: true,
+          mcpServers: {
+            weather: {
+              transport: "stdio",
+              command: process.execPath,
+              args: ["../mcp-servers/weather-server-typescript/build/index.js"],
+            },
           },
-        },
-      });
-      return client;
-    },
-    catch: (error) => new MCPClientError({ cause: error }),
-  });
+        });
+        return client;
+      },
+      catch: (error) => new MCPClientError({ cause: error }),
+    }),
+    (client) =>
+      Effect.tryPromise({
+        try: () => client.close(),
+        catch: () => new MCPClientError({ cause: "Failed to close client" }),
+      }).pipe(
+        Effect.tap(() => Console.log("Closed all MCP connections")),
+        Effect.ignore // Ignore cleanup errors to prevent resource leak
+      )
+  )
+);
 
-// Close MCP Client
-const closeMCPClient = (client: MultiServerMCPClient): Effect.Effect<void, MCPClientError> =>
-  Effect.tryPromise({
-    try: () => client.close(),
-    catch: () => new MCPClientError({ cause: "Failed to close client" }),
-  }).pipe(
-    Effect.tap(() => Console.log("Closed all MCP connections")),
-    Effect.asVoid
-  );
-
-// Get tools from MCP client
-const getTools = (client: MultiServerMCPClient) =>
-  Effect.tryPromise({
+// Get tools from MCP client using the service
+const getTools = Effect.gen(function* () {
+  const client = yield* MCPClientService;
+  const tools = yield* Effect.tryPromise({
     try: () => client.getTools(),
     catch: (error) => new MCPClientError({ cause: error }),
-  }).pipe(
-    Effect.flatMap((tools) =>
-      tools.length === 0
-        ? Effect.fail(new NoToolsError({ message: "No tools found" }))
-        : Effect.succeed(tools)
-    ),
-    Effect.tap((tools) =>
-      Console.log(
-        `Loaded ${tools.length} MCP tools: ${tools
-          .map((tool) => tool.name)
-          .join(", ")}`
-      )
-    )
+  });
+  
+  if (tools.length === 0) {
+    yield* Effect.fail(new NoToolsError({ message: "No tools found" }));
+  }
+  
+  yield* Console.log(
+    `Loaded ${tools.length} MCP tools: ${tools
+      .map((tool) => tool.name)
+      .join(", ")}`
   );
+  
+  return tools;
+});
 
 // Create Azure OpenAI model
 const createModel = (config: Config.Config.Success<typeof appConfig>, tools: any[]) =>
@@ -168,46 +178,39 @@ const runQuery = (app: any, query: string) =>
     catch: (error) => new MCPClientError({ cause: error }),
   });
 
-// Main program logic with proper resource management
+// Main program logic using the MCP Client service
 const program = Effect.gen(function* () {
   // Load configuration using Effect's Config primitive
   const config = yield* appConfig;
 
-  // Create and use the MCP client
-  const client = yield* createMCPClient();
+  // Get tools from MCP client (service is injected via Layer)
+  const tools = yield* getTools;
 
-  try {
-    // Get tools from MCP client
-    const tools = yield* getTools(client);
+  // Create model
+  const model = yield* createModel(config, tools);
 
-    // Create model
-    const model = yield* createModel(config, tools);
+  // Create workflow
+  const app = yield* createWorkflow(model, tools);
 
-    // Create workflow
-    const app = yield* createWorkflow(model, tools);
+  // Run queries
+  const queries = ["What is the weather doing in Los Angeles today?"];
 
-    // Run queries
-    const queries = ["What is the weather doing in Los Angeles today?"];
+  yield* Console.log("\n=== RUNNING LANGGRAPH AGENT ===");
 
-    yield* Console.log("\n=== RUNNING LANGGRAPH AGENT ===");
-
-    for (const query of queries) {
-      yield* runQuery(app, query);
-    }
-  } finally {
-    // Ensure client is closed
-    yield* closeMCPClient(client).pipe(Effect.ignore);
+  for (const query of queries) {
+    yield* runQuery(app, query);
   }
 });
 
-// Run the program using Effect's built-in runtime with configuration layer
+// Run the program using Effect's built-in runtime with layers
 const main = program.pipe(
   Effect.catchAll((error: any) =>
     Console.error(`Error: ${error._tag || 'Unknown'}`, error).pipe(
       Effect.andThen(() => Effect.die(error))
     )
   ),
-  Effect.tap(() => Console.log("Example completed successfully"))
+  Effect.tap(() => Console.log("Example completed successfully")),
+  Effect.provide(MCPClientLive) // Provide the MCP Client Layer
 );
 
 NodeRuntime.runMain(main);
