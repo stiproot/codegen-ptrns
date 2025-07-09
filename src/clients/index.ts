@@ -57,7 +57,6 @@ export const LlmModelFactoryLive = Layer.effect(
           azureOpenAIApiVersion: apiVersion,
           temperature: 0.7,
         })
-
       })
     } as ILlmModelFactory
   })
