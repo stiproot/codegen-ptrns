@@ -39,7 +39,7 @@ class NoToolsError extends Schema.TaggedError<NoToolsError>()("NoToolsError", {
 class MCPClientService extends Context.Tag("MCPClientService")<
   MCPClientService,
   MultiServerMCPClient
->() {}
+>() { }
 
 // Create MCP Client Layer with proper resource management
 const MCPClientLive = Layer.scoped(
@@ -82,17 +82,17 @@ const getTools = Effect.gen(function* () {
     try: () => client.getTools(),
     catch: (error) => new MCPClientError({ cause: error }),
   });
-  
+
   if (tools.length === 0) {
     yield* Effect.fail(new NoToolsError({ message: "No tools found" }));
   }
-  
+
   yield* Console.log(
     `Loaded ${tools.length} MCP tools: ${tools
       .map((tool) => tool.name)
       .join(", ")}`
   );
-  
+
   return tools;
 });
 
