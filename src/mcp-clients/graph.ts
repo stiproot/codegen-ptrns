@@ -1,28 +1,3 @@
-/**
- * LangGraph Example with MCP Tools Integration
- *
- * This example demonstrates how to use LangGraph with MCP tools to create a flexible agent workflow.
- *
- * LangGraph is a framework for building stateful, multi-actor applications with LLMs. It provides:
- * - A graph-based structure for defining complex workflows
- * - State management with type safety
- * - Conditional routing between nodes based on the state
- * - Built-in persistence capabilities
- *
- * In this example, we:
- * 1. Set up an MCP client to connect to the MCP everything server reference example
- * 2. Create a LangGraph workflow with two nodes: one for the LLM and one for tools
- * 3. Define the edges and conditional routing between the nodes
- * 4. Execute the workflow with example queries
- *
- * The main benefits of using LangGraph with MCP tools:
- * - Clear separation of responsibilities: LLM reasoning vs. tool execution
- * - Explicit control flow through graph-based routing
- * - Type safety for state management
- * - Ability to expand the graph with additional nodes for more complex workflows
- */
-
-/* eslint-disable no-console */
 import { AzureChatOpenAI, ChatOpenAI } from "@langchain/openai";
 import {
   StateGraph,
@@ -32,163 +7,147 @@ import {
 } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
-import dotenv from "dotenv";
+import * as dotenv from "dotenv";
 import { MultiServerMCPClient } from "@langchain/mcp-adapters";
+import { Effect, Console, Exit, Scope } from "effect";
+import { NodeRuntime } from "@effect/platform-node";
+import * as Schema from "effect/Schema";
 
-// Load environment variables from .env file
-dotenv.config();
+// Configuration schema
+const ConfigSchema = Schema.Struct({
+  azureOpenAIApiKey: Schema.String,
+  azureOpenAIApiDeploymentName: Schema.String,
+  azureOpenAIApiVersion: Schema.String,
+});
 
-/**
- * Example demonstrating how to use MCP tools with LangGraph agent flows
- * This example connects to a everything server and uses its tools
- */
-async function runExample() {
-  let client: MultiServerMCPClient | null = null;
+// Error types for better error handling
+class MCPClientError extends Schema.TaggedError<MCPClientError>()("MCPClientError", {
+  cause: Schema.Unknown,
+}) {}
 
-  try {
-    console.log("Initializing MCP client...");
+class NoToolsError extends Schema.TaggedError<NoToolsError>()("NoToolsError", {
+  message: Schema.String,
+}) {}
 
-    // Create a client with configurations for the everything server only
-    // client = new MultiServerMCPClient({
-    //   mcpServers: {
-    //     everything: {
-    //       transport: "stdio" as const,
-    //       command: "npx",
-    //       args: ["-y", "@modelcontextprotocol/server-everything"],
-    //     },
-    //   },
-    //   useStandardContentBlocks: true,
-    // });
+class ConfigError extends Schema.TaggedError<ConfigError>()("ConfigError", {
+  message: Schema.String,
+}) {}
 
-    client = new MultiServerMCPClient({
-      // Global tool configuration options
-      // Whether to throw on errors if a tool fails to load (optional, default: true)
-      throwOnLoadError: true,
-      // Whether to prefix tool names with the server name (optional, default: true)
-      prefixToolNameWithServerName: true,
-      // Optional additional prefix for tool names (optional, default: "mcp")
-      additionalToolNamePrefix: "mcp",
-
-      // Use standardized content block format in tool outputs
-      useStandardContentBlocks: true,
-
-      // Server configuration
-      mcpServers: {
-        weather: {
-          transport: "stdio",
-          command: process.execPath,
-          args: ["../mcp-servers/weather-server-typescript/build/index.js"],
+// Create MCP Client with proper typing
+const createMCPClient = (): Effect.Effect<MultiServerMCPClient, MCPClientError> =>
+  Effect.try({
+    try: () => {
+      const client = new MultiServerMCPClient({
+        throwOnLoadError: true,
+        prefixToolNameWithServerName: true,
+        additionalToolNamePrefix: "mcp",
+        useStandardContentBlocks: true,
+        mcpServers: {
+          weather: {
+            transport: "stdio",
+            command: process.execPath,
+            args: ["../mcp-servers/weather-server-typescript/build/index.js"],
+          },
         },
-      },
-    });
-
-    // Get the tools (flattened array is the default now)
-    const mcpTools = await client.getTools();
-
-    if (mcpTools.length === 0) {
-      throw new Error("No tools found");
-    }
-
-    console.log(
-      `Loaded ${mcpTools.length} MCP tools: ${mcpTools
-        .map((tool) => tool.name)
-        .join(", ")}`
-    );
-
-    // Create an OpenAI model and bind the tools
-    // const model = new ChatOpenAI({
-    //   modelName: process.env.OPENAI_MODEL_NAME || "gpt-4-turbo-preview",
-    //   temperature: 0,
-    // }).bindTools(mcpTools);
-
-    const apiKey: string = process.env.AZURE_OPENAI_API_KEY!;
-    const apiDeploymentName: string = process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME!;
-    const apiVersion: string = process.env.AZURE_OPENAI_API_VERSION!;
-
-    // Create an OpenAI model
-    const model = new AzureChatOpenAI({
-      modelName: "gpt-4o",
-      azureOpenAIApiKey: apiKey,
-      azureOpenAIApiDeploymentName: apiDeploymentName,
-      azureOpenAIApiVersion: apiVersion,
-      temperature: 0.7,
-    }).bindTools(mcpTools);
-
-    // Create a tool node for the LangGraph
-    const toolNode = new ToolNode(mcpTools);
-
-    // ================================================
-    // Create a LangGraph agent flow
-    // ================================================
-    console.log("\n=== CREATING LANGGRAPH AGENT FLOW ===");
-
-    /**
-     * MessagesAnnotation provides a built-in state schema for handling chat messages.
-     * It includes a reducer function that automatically:
-     * - Appends new messages to the history
-     * - Properly merges message lists
-     * - Handles message ID-based deduplication
-     */
-
-    // Define the function that calls the model
-    const llmNode = async (state: typeof MessagesAnnotation.State) => {
-      console.log("Calling LLM with messages:", state.messages.length);
-      const response = await model.invoke(state.messages);
-      return { messages: [response] };
-    };
-
-    // Create a new graph with MessagesAnnotation
-    const workflow = new StateGraph(MessagesAnnotation)
-
-      // Add the nodes to the graph
-      .addNode("llm", llmNode)
-      .addNode("tools", toolNode)
-
-      // Add edges - these define how nodes are connected
-      // START -> llm: Entry point to the graph
-      // tools -> llm: After tools are executed, return to LLM for next step
-      .addEdge(START, "llm")
-      .addEdge("tools", "llm")
-
-      // Conditional routing to end or continue the tool loop
-      // This is the core of the agent's decision-making process
-      .addConditionalEdges("llm", (state) => {
-        const lastMessage = state.messages[state.messages.length - 1];
-
-        // If the last message has tool calls, we need to execute the tools
-        // Cast to AIMessage to access tool_calls property
-        const aiMessage = lastMessage as AIMessage;
-        if (aiMessage.tool_calls && aiMessage.tool_calls.length > 0) {
-          console.log("Tool calls detected, routing to tools node");
-          return "tools";
-        }
-
-        // If there are no tool calls, we're done
-        console.log("No tool calls, ending the workflow");
-        return END;
       });
+      return client;
+    },
+    catch: (error) => new MCPClientError({ cause: error }),
+  });
 
-    // Compile the graph
-    // This creates a runnable LangChain object that we can invoke
-    const app = workflow.compile();
+// Close MCP Client
+const closeMCPClient = (client: MultiServerMCPClient): Effect.Effect<void, MCPClientError> =>
+  Effect.tryPromise({
+    try: () => client.close(),
+    catch: () => new MCPClientError({ cause: "Failed to close client" }),
+  }).pipe(
+    Effect.tap(() => Console.log("Closed all MCP connections")),
+    Effect.asVoid
+  );
 
-    // Define queries for testing
-    const queries = [
-      "What is the weather doing in Los Angeles today?",
-    ];
+// Get tools from MCP client
+const getTools = (client: MultiServerMCPClient) =>
+  Effect.tryPromise({
+    try: () => client.getTools(),
+    catch: (error) => new MCPClientError({ cause: error }),
+  }).pipe(
+    Effect.flatMap((tools) =>
+      tools.length === 0
+        ? Effect.fail(new NoToolsError({ message: "No tools found" }))
+        : Effect.succeed(tools)
+    ),
+    Effect.tap((tools) =>
+      Console.log(
+        `Loaded ${tools.length} MCP tools: ${tools
+          .map((tool) => tool.name)
+          .join(", ")}`
+      )
+    )
+  );
 
-    // Test the LangGraph agent with the queries
-    console.log("\n=== RUNNING LANGGRAPH AGENT ===");
-    for (const query of queries) {
+// Create Azure OpenAI model
+const createModel = (config: typeof ConfigSchema.Type, tools: any[]) =>
+  Effect.try({
+    try: () => {
+      const model = new AzureChatOpenAI({
+        modelName: "gpt-4o",
+        azureOpenAIApiKey: config.azureOpenAIApiKey,
+        azureOpenAIApiDeploymentName: config.azureOpenAIApiDeploymentName,
+        azureOpenAIApiVersion: config.azureOpenAIApiVersion,
+        temperature: 0.7,
+      }).bindTools(tools);
+      return model;
+    },
+    catch: (error) => new MCPClientError({ cause: error }),
+  });
+
+// Create LangGraph workflow
+const createWorkflow = (model: any, tools: any[]) =>
+  Effect.try({
+    try: () => {
+      const toolNode = new ToolNode(tools);
+
+      console.log("\n=== CREATING LANGGRAPH AGENT FLOW ===");
+
+      // Define the function that calls the model
+      const llmNode = async (state: typeof MessagesAnnotation.State) => {
+        console.log("Calling LLM with messages:", state.messages.length);
+        const response = await model.invoke(state.messages);
+        return { messages: [response] };
+      };
+
+      // Create a new graph with MessagesAnnotation
+      const workflow = new StateGraph(MessagesAnnotation)
+        .addNode("llm", llmNode)
+        .addNode("tools", toolNode)
+        .addEdge(START, "llm")
+        .addEdge("tools", "llm")
+        .addConditionalEdges("llm", (state) => {
+          const lastMessage = state.messages[state.messages.length - 1];
+          const aiMessage = lastMessage as AIMessage;
+          if (aiMessage.tool_calls && aiMessage.tool_calls.length > 0) {
+            console.log("Tool calls detected, routing to tools node");
+            return "tools";
+          }
+          console.log("No tool calls, ending the workflow");
+          return END;
+        });
+
+      return workflow.compile();
+    },
+    catch: (error) => new MCPClientError({ cause: error }),
+  });
+
+// Run a single query
+const runQuery = (app: any, query: string) =>
+  Effect.tryPromise({
+    try: async () => {
       console.log(`\nQuery: ${query}`);
-
-      // Run the LangGraph agent with the query
-      // The query is converted to a HumanMessage and passed into the state
+      
       const result = await app.invoke({
         messages: [new HumanMessage(query)],
       });
 
-      // Display the result and all messages in the final state
       console.log(`\nFinal Messages (${result.messages.length}):`);
       result.messages.forEach((msg: BaseMessage, i: number) => {
         const msgType = "type" in msg ? msg.type : "unknown";
@@ -202,24 +161,70 @@ async function runExample() {
 
       const finalMessage = result.messages[result.messages.length - 1];
       console.log(`\nResult: ${finalMessage.content}`);
+      
+      return result;
+    },
+    catch: (error) => new MCPClientError({ cause: error }),
+  });
+
+// Main program logic with proper resource management
+const program = Effect.gen(function* () {
+  // Load environment configuration
+  dotenv.config();
+  
+  const config = yield* Effect.try({
+    try: () => ({
+      azureOpenAIApiKey: process.env.AZURE_OPENAI_API_KEY!,
+      azureOpenAIApiDeploymentName: process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME!,
+      azureOpenAIApiVersion: process.env.AZURE_OPENAI_API_VERSION!,
+    }),
+    catch: () => new ConfigError({ message: "Failed to load environment variables" }),
+  }).pipe(
+    Effect.flatMap((rawConfig) =>
+      Schema.decodeUnknown(ConfigSchema)(rawConfig).pipe(
+        Effect.mapError(() => new ConfigError({ message: "Invalid configuration" }))
+      )
+    )
+  );
+
+  // Create and use the MCP client
+  const client = yield* createMCPClient();
+  
+  try {
+    // Get tools from MCP client
+    const tools = yield* getTools(client);
+    
+    // Create model
+    const model = yield* createModel(config, tools);
+    
+    // Create workflow
+    const app = yield* createWorkflow(model, tools);
+    
+    // Run queries
+    const queries = ["What is the weather doing in Los Angeles today?"];
+    
+    yield* Console.log("\n=== RUNNING LANGGRAPH AGENT ===");
+    
+    for (const query of queries) {
+      yield* runQuery(app, query);
     }
-  } catch (error) {
-    console.error("Error:", error);
-    process.exit(1); // Exit with error code
   } finally {
-    // Close all client connections
-    if (client) {
-      await client.close();
-      console.log("\nClosed all MCP connections");
-    }
-
-    // Exit process after a short delay to allow for cleanup
-    setTimeout(() => {
-      console.log("Example completed, exiting process.");
-      process.exit(0);
-    }, 500);
+    // Ensure client is closed
+    yield* closeMCPClient(client).pipe(Effect.ignore);
   }
-}
+});
 
-// Run the example
-runExample().catch(console.error);
+// Run the program using Effect's built-in runtime
+Effect.runPromise(
+  program.pipe(
+    Effect.catchAll((error: any) =>
+      Console.error(`Error: ${error._tag || 'Unknown'}`, error).pipe(
+        Effect.andThen(() => Effect.die(error))
+      )
+    ),
+    Effect.tap(() => Console.log("Example completed successfully"))
+  )
+).catch((error) => {
+  console.error("Unhandled error:", error);
+  process.exit(1);
+});
