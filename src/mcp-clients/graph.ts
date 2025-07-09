@@ -1,4 +1,4 @@
-import { AzureChatOpenAI, ChatOpenAI } from "@langchain/openai";
+import { AzureChatOpenAI } from "@langchain/openai";
 import {
   StateGraph,
   END,
@@ -7,31 +7,32 @@ import {
 } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
-import * as dotenv from "dotenv";
 import { MultiServerMCPClient } from "@langchain/mcp-adapters";
-import { Effect, Console, Exit, Scope } from "effect";
+import { Effect, Console, Exit, Scope, Config } from "effect";
 import { NodeRuntime } from "@effect/platform-node";
 import * as Schema from "effect/Schema";
+import * as dotenv from "dotenv";
 
-// Configuration schema
-const ConfigSchema = Schema.Struct({
-  azureOpenAIApiKey: Schema.String,
-  azureOpenAIApiDeploymentName: Schema.String,
-  azureOpenAIApiVersion: Schema.String,
+dotenv.config();
+
+const azureOpenAIApiKey = Config.string("AZURE_OPENAI_API_KEY");
+const azureOpenAIApiDeploymentName = Config.string("AZURE_OPENAI_API_DEPLOYMENT_NAME");
+const azureOpenAIApiVersion = Config.string("AZURE_OPENAI_API_VERSION");
+
+const appConfig = Config.all({
+  azureOpenAIApiKey,
+  azureOpenAIApiDeploymentName,
+  azureOpenAIApiVersion,
 });
 
 // Error types for better error handling
 class MCPClientError extends Schema.TaggedError<MCPClientError>()("MCPClientError", {
   cause: Schema.Unknown,
-}) {}
+}) { }
 
 class NoToolsError extends Schema.TaggedError<NoToolsError>()("NoToolsError", {
   message: Schema.String,
-}) {}
-
-class ConfigError extends Schema.TaggedError<ConfigError>()("ConfigError", {
-  message: Schema.String,
-}) {}
+}) { }
 
 // Create MCP Client with proper typing
 const createMCPClient = (): Effect.Effect<MultiServerMCPClient, MCPClientError> =>
@@ -86,7 +87,7 @@ const getTools = (client: MultiServerMCPClient) =>
   );
 
 // Create Azure OpenAI model
-const createModel = (config: typeof ConfigSchema.Type, tools: any[]) =>
+const createModel = (config: Config.Config.Success<typeof appConfig>, tools: any[]) =>
   Effect.try({
     try: () => {
       const model = new AzureChatOpenAI({
@@ -143,7 +144,7 @@ const runQuery = (app: any, query: string) =>
   Effect.tryPromise({
     try: async () => {
       console.log(`\nQuery: ${query}`);
-      
+
       const result = await app.invoke({
         messages: [new HumanMessage(query)],
       });
@@ -161,7 +162,7 @@ const runQuery = (app: any, query: string) =>
 
       const finalMessage = result.messages[result.messages.length - 1];
       console.log(`\nResult: ${finalMessage.content}`);
-      
+
       return result;
     },
     catch: (error) => new MCPClientError({ cause: error }),
@@ -169,42 +170,27 @@ const runQuery = (app: any, query: string) =>
 
 // Main program logic with proper resource management
 const program = Effect.gen(function* () {
-  // Load environment configuration
-  dotenv.config();
-  
-  const config = yield* Effect.try({
-    try: () => ({
-      azureOpenAIApiKey: process.env.AZURE_OPENAI_API_KEY!,
-      azureOpenAIApiDeploymentName: process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME!,
-      azureOpenAIApiVersion: process.env.AZURE_OPENAI_API_VERSION!,
-    }),
-    catch: () => new ConfigError({ message: "Failed to load environment variables" }),
-  }).pipe(
-    Effect.flatMap((rawConfig) =>
-      Schema.decodeUnknown(ConfigSchema)(rawConfig).pipe(
-        Effect.mapError(() => new ConfigError({ message: "Invalid configuration" }))
-      )
-    )
-  );
+  // Load configuration using Effect's Config primitive
+  const config = yield* appConfig;
 
   // Create and use the MCP client
   const client = yield* createMCPClient();
-  
+
   try {
     // Get tools from MCP client
     const tools = yield* getTools(client);
-    
+
     // Create model
     const model = yield* createModel(config, tools);
-    
+
     // Create workflow
     const app = yield* createWorkflow(model, tools);
-    
+
     // Run queries
     const queries = ["What is the weather doing in Los Angeles today?"];
-    
+
     yield* Console.log("\n=== RUNNING LANGGRAPH AGENT ===");
-    
+
     for (const query of queries) {
       yield* runQuery(app, query);
     }
@@ -214,17 +200,14 @@ const program = Effect.gen(function* () {
   }
 });
 
-// Run the program using Effect's built-in runtime
-Effect.runPromise(
-  program.pipe(
-    Effect.catchAll((error: any) =>
-      Console.error(`Error: ${error._tag || 'Unknown'}`, error).pipe(
-        Effect.andThen(() => Effect.die(error))
-      )
-    ),
-    Effect.tap(() => Console.log("Example completed successfully"))
-  )
-).catch((error) => {
-  console.error("Unhandled error:", error);
-  process.exit(1);
-});
+// Run the program using Effect's built-in runtime with configuration layer
+const main = program.pipe(
+  Effect.catchAll((error: any) =>
+    Console.error(`Error: ${error._tag || 'Unknown'}`, error).pipe(
+      Effect.andThen(() => Effect.die(error))
+    )
+  ),
+  Effect.tap(() => Console.log("Example completed successfully"))
+);
+
+NodeRuntime.runMain(main);
