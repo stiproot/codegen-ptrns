@@ -1,5 +1,6 @@
 .env
 .secrets
+.tmp/
 
 # Node artifact files
 node_modules/
