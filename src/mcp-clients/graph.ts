@@ -15,7 +15,6 @@ import * as dotenv from "dotenv";
 
 dotenv.config();
 
-
 const azureOpenAIApiKey = Config.string("AZURE_OPENAI_API_KEY");
 const azureOpenAIApiDeploymentName = Config.string("AZURE_OPENAI_API_DEPLOYMENT_NAME");
 const azureOpenAIApiVersion = Config.string("AZURE_OPENAI_API_VERSION");
@@ -26,7 +25,6 @@ const appConfig = Config.all({
   azureOpenAIApiVersion,
 });
 
-// Error types for better error handling
 class MCPClientError extends Schema.TaggedError<MCPClientError>()("MCPClientError", {
   cause: Schema.Unknown,
 }) { }
@@ -35,45 +33,30 @@ class NoToolsError extends Schema.TaggedError<NoToolsError>()("NoToolsError", {
   message: Schema.String,
 }) { }
 
-// Service tag for MultiServerMCPClient
-class MCPClientService extends Context.Tag("MCPClientService")<
-  MCPClientService,
-  MultiServerMCPClient
->() { }
-
-// Create MCP Client Layer with proper resource management
-const MCPClientLive = Layer.scoped(
-  MCPClientService,
-  Effect.acquireRelease(
-    Effect.try({
-      try: () => {
-        const client = new MultiServerMCPClient({
-          throwOnLoadError: true,
-          prefixToolNameWithServerName: true,
-          additionalToolNamePrefix: "mcp",
-          useStandardContentBlocks: true,
-          mcpServers: {
-            weather: {
-              transport: "stdio",
-              command: process.execPath,
-              args: ["../mcp-servers/weather-server-typescript/build/index.js"],
-            },
-          },
-        });
-        return client;
+class MCPClientService extends Effect.Service<MCPClientService>()("MCPClientService", {
+  scoped: Effect.acquireRelease(
+    Effect.sync(() => new MultiServerMCPClient({
+      throwOnLoadError: true,
+      prefixToolNameWithServerName: true,
+      additionalToolNamePrefix: "mcp",
+      useStandardContentBlocks: true,
+      mcpServers: {
+        weather: {
+          transport: "stdio",
+          command: process.execPath,
+          args: ["../mcp-servers/weather-server-typescript/build/index.js"],
+        },
       },
-      catch: (error) => new MCPClientError({ cause: error }),
-    }),
-    (client) =>
-      Effect.tryPromise({
-        try: () => client.close(),
-        catch: () => new MCPClientError({ cause: "Failed to close client" }),
-      }).pipe(
-        Effect.tap(() => Console.log("Closed all MCP connections")),
-        Effect.ignore // Ignore cleanup errors to prevent resource leak
-      )
+    })),
+    (client) => Effect.tryPromise({
+      try: () => client.close(),
+      catch: () => new MCPClientError({ cause: "Failed to close client" }),
+    }).pipe(
+      Effect.tap(() => Console.log("Closed all MCP connections")),
+      Effect.ignore
+    )
   )
-);
+}) { }
 
 // Get tools from MCP client using the service
 const getTools = Effect.gen(function* () {
@@ -210,7 +193,7 @@ const main = program.pipe(
     )
   ),
   Effect.tap(() => Console.log("Example completed successfully")),
-  Effect.provide(MCPClientLive) // Provide the MCP Client Layer
+  Effect.provide(MCPClientService.Default) // Provide the MCP Client Layer
 );
 
 NodeRuntime.runMain(main);
