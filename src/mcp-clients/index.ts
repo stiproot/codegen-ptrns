@@ -1,7 +1,7 @@
 import { Effect, Console } from "effect";
 import { NodeRuntime } from "@effect/platform-node";
 import { appConfig } from "./cfg";
-import { createModel, createWorkflow, getTools, MCPClientService, runQuery } from "./utls";
+import { createModel, buildWorkflow, getTools, MCPClientService, runQuery } from "./utls";
 
 
 // Main program logic using the MCP Client service
@@ -16,10 +16,11 @@ const program = Effect.gen(function* () {
   const model = yield* createModel(config, tools);
 
   // Create workflow
-  const app = yield* createWorkflow(model, tools);
+  const app = yield* buildWorkflow(model, tools);
 
   // Run queries
-  const queries = ["What is the weather doing in Los Angeles today?"];
+  // const queries = ["What is the weather doing in Los Angeles today?"];
+  const queries = ["Scaffold me a Node.js TypeScript project called 'langchain-lab'"];
 
   yield* Console.log("\n=== RUNNING LANGGRAPH AGENT ===");
 

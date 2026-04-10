@@ -28,11 +28,17 @@ export class MCPClientService extends Effect.Service<MCPClientService>()("MCPCli
       additionalToolNamePrefix: "mcp",
       useStandardContentBlocks: true,
       mcpServers: {
-        weather: {
+        // weather: {
+        //   transport: "stdio",
+        //   command: process.execPath,
+        //   args: ["../mcp-servers/weather-server-typescript/build/index.js"],
+        // },
+        // { }
+        "node-typescript-scaffold": {
           transport: "stdio",
           command: process.execPath,
-          args: ["../mcp-servers/weather-server-typescript/build/index.js"],
-        },
+          args: ["/Users/simon.stipcich/code/lab/mcp-servers/node-typescript-scaffold/dist/index.js"]
+        }
       },
     })),
     (client) => Effect.tryPromise({
@@ -45,7 +51,6 @@ export class MCPClientService extends Effect.Service<MCPClientService>()("MCPCli
   )
 }) { }
 
-// Get tools from MCP client using the service
 export const getTools = Effect.gen(function* () {
   const client = yield* MCPClientService;
   const tools = yield* Effect.tryPromise({
@@ -66,7 +71,6 @@ export const getTools = Effect.gen(function* () {
   return tools;
 });
 
-// Create Azure OpenAI model
 export const createModel = (config: Config.Config.Success<typeof appConfig>, tools: any[]) =>
   Effect.try({
     try: () => {
@@ -82,13 +86,13 @@ export const createModel = (config: Config.Config.Success<typeof appConfig>, too
     catch: (error) => new MCPClientError({ cause: error }),
   });
 
-// Create LangGraph workflow
-export const createWorkflow = (model: any, tools: any[]) =>
+export const buildWorkflow = (
+  model: any,
+  tools: any[]
+) =>
   Effect.try({
     try: () => {
       const toolNode = new ToolNode(tools);
-
-      console.log("\n=== CREATING LANGGRAPH AGENT FLOW ===");
 
       // Define the function that calls the model
       const llmNode = async (state: typeof MessagesAnnotation.State) => {
